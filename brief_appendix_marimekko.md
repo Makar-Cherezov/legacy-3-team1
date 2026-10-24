@@ -80,7 +80,7 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
     var PALETTE = ["#2e75b6", "#70ad47", "#ffc000", "#a5a5a5",
                    "#c55a11", "#7030a0", "#00b0f0", "#843c0c"];
 
-    function buildModel(rows) {
+    function buildModel(rows, maxColumns) {
         var cols = {}, order = [], segs = [], seen = {}, grand = 0;
         rows.forEach(function (r) {
             if (!(r.value > 0)) { return; }
@@ -92,7 +92,22 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
             if (!seen[r.segment]) { seen[r.segment] = true; segs.push(r.segment); }
         });
         order.sort(function (a, b) { return b.total - a.total; });
+        if (maxColumns && order.length > maxColumns) {
+            var rest = order.splice(maxColumns - 1), other = { name: "Прочие", total: 0, cells: {} };
+            rest.forEach(function (c) {
+                other.total += c.total;
+                Object.keys(c.cells).forEach(function (k) { other.cells[k] = (other.cells[k] || 0) + c.cells[k]; });
+            });
+            order.push(other);
+        }
         return { columns: order, segments: segs, grand: grand };
+    }
+
+    // тёмный текст на светлом фоне и наоборот
+    function textColor(hex) {
+        var n = parseInt(hex.slice(1), 16);
+        var lum = 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+        return lum > 160 ? "#222" : "#fff";
     }
 
     function MarimekkoChart(element, options) {
@@ -103,6 +118,8 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
             font: "12px Roboto, Arial, sans-serif",
             minLabelWidth: 44,
             minLabelHeight: 16,
+            maxColumns: 20,
+            emptyText: "Нет данных для отображения",
             colors: PALETTE,
             format: function (v) { return kendo.toString(v, "n1"); },
             click: null
@@ -112,12 +129,14 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
         this.tip = $('<div class="mm-tooltip" style="display:none;position:absolute;' +
                      'pointer-events:none;background:#fff;border:1px solid #999;' +
                      'padding:4px 8px;font-size:12px;"></div>').appendTo(this.element);
+        this.uid = ++MarimekkoChart.counter;
         this._bind();
     }
+    MarimekkoChart.counter = 0;
 
     MarimekkoChart.prototype = {
         setData: function (rows) {
-            this.model = buildModel(rows || []);
+            this.model = buildModel(rows || [], this.options.maxColumns);
             this.render();
         },
 
@@ -125,7 +144,13 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
             var o = this.options, m = this.model, self = this;
             this.surface.resize();
             this.surface.clear();
-            if (!m || !m.grand) { return; }
+            if (!m || !m.grand) {
+                var empty = new draw.Group();
+                empty.append(this._text(o.emptyText, this.element.width() / 2,
+                                        this.element.height() / 2, "#666"));
+                this.surface.draw(empty);
+                return;
+            }
 
             var W = this.element.width(), H = this.element.height();
             var plot = {
@@ -145,8 +170,9 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
                     var v = col.cells[seg];
                     if (!v) { return; }
                     var ch = plot.h * v / col.total;
+                    var fillColor = o.colors[i % o.colors.length];
                     var rect = new draw.Rect(new geo.Rect([x, y - ch], [cw, ch]), {
-                        fill: { color: o.colors[i % o.colors.length] },
+                        fill: { color: fillColor },
                         stroke: { color: "#fff", width: 1 },
                         cursor: "pointer"
                     });
@@ -158,7 +184,7 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
 
                     if (cw >= o.minLabelWidth && ch >= o.minLabelHeight) {
                         root.append(self._text(kendo.toString(v / col.total, "p0"),
-                                               x + cw / 2, y - ch / 2, "#fff"));
+                                               x + cw / 2, y - ch / 2, textColor(fillColor)));
                     }
                     y -= ch;
                 });
@@ -220,7 +246,14 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
             this.surface.bind("click", function (e) {
                 if (e.element.info && self.options.click) { self.options.click(e.element.info); }
             });
-            $(global).on("resize", function () { self.render(); });
+            $(global).on("resize.marimekko" + this.uid, function () { self.render(); });
+        },
+
+        destroy: function () {
+            $(global).off("resize.marimekko" + this.uid);
+            this.element.off("mousemove");
+            this.surface.destroy();
+            this.tip.remove();
         }
     };
 
@@ -228,6 +261,8 @@ Kendo Chart строит столбцы одинаковой ширины. Ши�
 })(window, jQuery, kendo);
 ```
 
+> **Проверено запуском.** Расчёт геометрии (ширина столбцов по итогам, высоты сегментов, пропуск нулевых и отрицательных значений, объединение в «Прочие», пустое состояние) прогнан в JavaScriptCore с заглушками jQuery и Kendo; пропорции верны. Вызовы самого Kendo (`Surface.create`, события поверхности, `measureText`, `destroy`) **не проверены**.
+>
 > Код — рабочая заготовка для старта. Перед использованием его нужно проверить на целевой версии Kendo UI (имена API `kendo.drawing.Surface`, `kendo.util.measureText`, события поверхности стабильны в современных версиях, но версия определяется на старте проекта).
 
 ## 7. Подключение в ASP.NET MVC 5
@@ -241,13 +276,17 @@ public class ReportDataController : Controller
 {
     private readonly IReportDataService _data;
     public ReportDataController(IReportDataService data) { _data = data; }
+    private ICurrentUser CurrentUser { get { return (ICurrentUser)HttpContext.Items["currentUser"]; } }
 
     [HttpGet]
-    public JsonResult Marimekko(Guid reportId)
+    [ReportUserAuthorize]   // проверка входа и роли модуля (п. 5 брифа); для AJAX — чистый 401
+    public JsonResult Marimekko(Guid reportId, string filter)
     {
-        // доступ проверяется атрибутом/фильтром авторизации модуля (п. 5 брифа)
-        var rows = _data.GetMarimekko(reportId, Request.QueryString);
-        return Json(new { rows }, JsonRequestBehavior.AllowGet);
+        // фильтры разбираются сервисом и принимаются только по полям формы (белый список);
+        // Request.QueryString целиком в сервис не передаётся
+        var rows = _data.GetMarimekko(reportId, filter, CurrentUser);
+        if (rows == null) { Response.StatusCode = 404; return Json(new { code = "NOT_FOUND" }); }
+        return Json(new { rows }, JsonRequestBehavior.AllowGet);   // объект, а не массив
     }
 }
 
@@ -261,7 +300,7 @@ public class MarimekkoRow
 
 Запрос сервиса — группировка `GROUP BY column, segment` с `SUM(value)` по источникам из п. 7 брифа.
 
-**Представление (Razor):**
+**Представление (Razor).** В самой АИС ГП представления `.aspx`; для обособленного модуля на MVC 5 допустим Razor, а при необходимости единого стиля разметка переносится в `.aspx` без изменений в скрипте.
 
 ```html
 <div id="mm" style="height:420px"></div>
@@ -282,8 +321,8 @@ public class MarimekkoRow
 | Нулевые и отрицательные значения | Пропускаются (площадь не может быть отрицательной) |
 | Очень узкий столбец или сегмент | Подпись скрывается, значение остаётся в подсказке |
 | Подпись столбца не помещается | Не выводится, доступна в подсказке; при необходимости добавляется поворот или сокращение |
-| Много столбцов (более ~20) | Самые мелкие объединяются в «Прочие» на сервере (порог задаёт специалист) |
-| Нет данных | Пустая область с сообщением «Нет данных для отображения» |
+| Много столбцов (более `maxColumns`, по умолчанию 20) | Самые мелкие объединяются в «Прочие» в клиентском коде (иначе при зазорах шире области ширина становится отрицательной; проверено запуском). Порог можно задать и на сервере |
+| Нет данных | Пустая область с сообщением «Нет данных для отображения» (рисуется кодом) |
 | Изменение размера окна | Перерисовка по событию `resize` |
 | Печать и экспорт | Не требуются (п. 10 брифа) |
 | Цвета | Одинаковый цвет сегмента во всех столбцах, палитра — в стиле АИС ГП |

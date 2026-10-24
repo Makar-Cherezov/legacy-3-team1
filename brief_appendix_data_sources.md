@@ -4,7 +4,7 @@
 | | |
 |---|---|
 | **Относится к** | `brief_tz_reports_module.md`, п. 6.2 (выбор источника в конструкторе) и п. 7 |
-| **Основа** | Модель данных `Ugf.GovPrograms.DataLayer` (каталог `Model`, около 450 классов) |
+| **Основа** | Модель данных `Ugf.GovPrograms.DataLayer` (каталог `Model`: 315 таблиц в `.edmx`, 450 файлов классов) |
 | **Статус** | Черновик для согласования |
 | **Версия** | 0.1 |
 
@@ -28,9 +28,12 @@
 ## 2. Ключевые особенности модели
 
 - **Версионность.** `GovernmentProgram` — это одна **версия** госпрограммы (поля `GpId`, `VersionName`, `CurrentYear`, `CreationDate`). Данные программы (подпрограммы, показатели, планы) привязаны к версии. Отчёт строится в контексте выбранной версии и отчётного года.
-- **Историчность значений.** Значения хранятся по датам (`ActualDate`): `IndicatorValue`, `KBKFinancing`, `PlanKeyEvent` и др. В источнике нужно задавать правило выбора записи на дату.
+- **Историчность значений.** Значения показателей и финансирования хранятся по датам (`ActualDate` в `IndicatorValue`, `KBKFinancing`). Исключение: в `PlanKeyEvent` поле `ActualDate` — **плановый срок** контрольного события, с ним сравнивается `FactEndDate` из `ReportPlanKeyEvent`. В источнике нужно задавать правило выбора записи на дату.
 - **Снимки и `*Version`.** Классы `*Version` и `Snapshot` — копии данных на момент утверждения. Для аналитики берутся рабочие сущности, а снимки — только если нужен срез на прошлую дату (вторая очередь).
-- **План и факт разделены.** Плановые данные — `Plan*`, `PlanKeyEvent`; фактические по отчётному периоду — `Report*`, связанные через `RealizationReport` (`RealizationReportId`).
+- **План и факт разделены.** Плановые данные — `Plan*`, `PlanKeyEvent`; фактические — `Report*`, связанные через `RealizationReport` (`RealizationReportId`).
+- **`RealizationReport` — ежеквартальный мониторинг.** Годовой отчёт `AnnualReport` (флаг `IsIncludeInSummaryReport`), `RequestedReport` («Доклад») и `ReportToDate` — его наследники, в БД отдельные таблицы (наследование «таблица на тип»). Прямого внешнего ключа на `GovernmentProgram` у `RealizationReport` нет: к программе ведёт путь `Report*` → `Plan*` → `Plan` → `GovernmentProgram`. Для сводных данных берётся мониторинг за 4-й квартал года, при отсутствии — за 3-й и далее.
+- **Пилотные и непилотные программы хранятся раздельно.** Модель `Model` содержит только непилотные: нет `MonitoringPlan`, `MonitoringRealizationPlan`, `MRPStructuralElement`, `MRPCheckpointPassport`, `ProgramGoalPilot`, `StructuralElementKBKFinancing`, `ResourceSupply`, `AnnualPilotReport*`, `PgpIndicatorMerCalcSetting*`, `FakeEvent` («Доп. КТ/КС для СГД») и `BudgetExecution`. Источники ниже относятся к непилотным ГП.
+- **Наследование «таблица на тип»** используется и в других местах (`Programs` + `Programs_GovernmentProgram`, `IndicatorValues` + подтипы `TerritoryIndicatorValue`, `PriorityTerritoryIndicatorValue`). Запросы по подтипам содержат лишние соединения.
 - **Финансирование.** Бюджетные суммы — по КБК (`KBKFinancing`, `ReportKBKFinancing`). Прямой ссылки на программу у `KBKFinancing` нет: связь идёт через `mmFCPKBKFinancing` (ФЦП) и `mmSubprgActKBKFinancing` (основные мероприятия, ВЦП). В `ReportKBKFinancing` есть прямые `FCPId` и `SubprogramActionId`.
 - **Данные Минфина** (`MfData*`, `MfProgram`) хранят коды (`GRBSCode`, `VRCode`) строками, без внешних ключей на справочники.
 
@@ -161,19 +164,15 @@
 |---|---|
 | 1. КС по планам реализации ГП (прил. 2, 3) | `GovernmentProgram`, `Plan`, `PlanSimpleAction`, `PlanKeyEvent`, `ReportPlanKeyEvent`, `ProgramScope` |
 | 2. КС по детальным планам-графикам (прил. 4) | `PlanKeyEvent`, `ReportPlanKeyEvent`, `PlanSimpleAction` |
-| 3. Контрольные точки пилотных ГП (прил. 7) | `PlanKeyEvent`, `ReportPlanKeyEvent`, `Subprogram`, `FCP` |
-| 4. КТ по структурным элементам (прил. 8) | `PlanKeyEvent`, `ReportPlanKeyEvent`, `Subprogram`, `FCP` |
-| 5. Достижение целей (прил. 5) | `Indicator`, `IndicatorValue`, `ReportIndicatorValue`, `Unit` |
-| 6. Прогноз достижения целей (прил. 6) | `Indicator`, `IndicatorValue`, `ReportIndicatorValue` |
-| 7. Кассовое исполнение (прил. 9) | `KBKFinancing`, `ReportKBKFinancing`, `KBK`, `GRBS`, `CashExecution` |
-| 8. Расходные обязательства (прил. 10) | `MfDataVolumeCashExecution` (по кодам ГРБС и ВР), справочники `GRBS`, `VR` |
-| 9. Структура финансирования | `SubprogramFinancingValue`, `SubprogramActionFinancingValue`, `FCPFinancingValue`, `FinancingSource` |
-| 10. Сводная статистика | `GovProgramStatistic` (числовые поля), `FOIV` |
+| 3. Значения показателей ГП (план/факт) | `Indicator`, `IndicatorValue`, `ReportIndicatorValue`, `Unit` |
+| 4. Кассовое исполнение (прил. 9) | `KBKFinancing`, `ReportKBKFinancing`, `KBK`, `GRBS`, `CashExecution` |
+| 5. Расходные обязательства (прил. 10) | `MfDataVolumeCashExecution` (по кодам ГРБС и ВР), справочники `GRBS`, `VR` |
+| 6. Структура финансирования | `SubprogramFinancingValue`, `SubprogramActionFinancingValue`, `FCPFinancingValue`, `FinancingSource` |
+| 7. Сводная статистика | `GovProgramStatistic` (числовые поля), `FOIV` |
 
 ## 7. Что нужно уточнить
 
-1. **Связь `RealizationReport` с программой.** В классе есть только ссылка на версию программы; уточнить, как выбирается отчёт для версии и периода.
+1. **Связь `RealizationReport` с программой.** Прямого ключа нет; путь через `Plan*` выведен из ВКР и `.edmx`, проверить на данных. Поле `VersionId` ссылается на версию-снимок, его роль уточнить.
 2. **Связь данных Минфина** (`MfProgram`, `MfData*`) с программами АИС ГП: через сопоставление версий или по кодам — зависит от того, как заполнен тестовый набор.
 3. **Правило выбора значения на дату** для сущностей с `ActualDate` и `OriginalId` (последнее значение на дату или все записи).
-4. **Пилотные и непилотные программы.** По ВКР данные двух типов хранятся в родственных, но разных структурах; нужно решить, показывает ли источник оба типа или каждый отдельно.
-5. Состав «Доп.» источников, нужных в первой версии.
+4. Состав «Доп.» источников, нужных в первой версии.
